@@ -56,19 +56,40 @@ class ClientController extends AbstractController
 	#[Route('/api/client', name: 'add_client', methods: ['POST'])]
 	public function addClient(Request $request): JsonResponse
 	{
-		$data = json_decode($request->getContent(), true);
 
-		if (!isset($data['name'])) {
-			return new JsonResponse(['error' => 'Missing required fields'], Response::HTTP_BAD_REQUEST);
+		try {
+			$data = json_decode($request->getContent(), true);
+
+			if (!isset($data['name'])) {
+				return new JsonResponse(['error' => 'Missing required fields'], Response::HTTP_BAD_REQUEST);
+			}
+
+			$client = new Client();
+			$client->setCompanyName($data['name']);
+
+
+			$this->entityManager->persist($client);
+			$this->entityManager->flush();
+
+			return new JsonResponse(['id' => $client->getId()], Response::HTTP_CREATED);
+		} catch (\Exception $e) {
+			return $this->json(['error' => 'Une erreur est survenue : ' . $e->getMessage()], 500);
 		}
 
-		$client = new Client();
-		$client->setCompanyName($data['name']);
+	}
 
+	#[Route('/api/client/{id}', name: 'delete_client', methods: ['DELETE'])]
+	public function deleteClient(int $id): JsonResponse
+	{
+		$client = $this->entityManager->getRepository(Client::class)->find($id);
 
-		$this->entityManager->persist($client);
+		if (!$client) {
+			return new JsonResponse(['error' => 'client not found'], Response::HTTP_NOT_FOUND);
+		}
+
+		$this->entityManager->remove($client);
 		$this->entityManager->flush();
 
-		return new JsonResponse(['id' => $client->getId()], Response::HTTP_CREATED);
+		return new JsonResponse(null, Response::HTTP_NO_CONTENT);
 	}
 }

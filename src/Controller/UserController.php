@@ -10,14 +10,18 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Uid\Uuid;
+use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 class UserController extends AbstractController
 {
 	private EntityManagerInterface $entityManager;
+	private UserPasswordHasherInterface $passwordHasher;
 
-	public function __construct(EntityManagerInterface $entityManager)
+	public function __construct(EntityManagerInterface $entityManager, UserPasswordHasherInterface $passwordHasher)
 	{
 		$this->entityManager = $entityManager;
+		$this->passwordHasher = $passwordHasher;
 	}
 
 	#[Route('/api/users', name: 'get_users', methods: ['GET'])]
@@ -28,8 +32,11 @@ class UserController extends AbstractController
 
 		foreach ($users as $user) {
 			$data[] = [
-				'id' => $user->getUserById(),
+				'id' => $user->getId(),
 				'username' => $user->getUsername(),
+				'firstname' => $user->getFirstname(),
+				'lastname' => $user->getLastname(),
+				'clientId' => $user->getClient()->getId(),
 			];
 		}
 
@@ -60,25 +67,37 @@ class UserController extends AbstractController
 	{
 		$data = json_decode($request->getContent(), true);
 
-		if (!isset($data['username']) || !isset($data['client_id'])) {
-			return new JsonResponse(['error' => 'Missing "username" or "client_id"'], Response::HTTP_BAD_REQUEST);
+		if (!isset($data['username'], $data['email'], $data['password'], $data['client'])) {
+			return new JsonResponse(['error' => 'Missing required fields'], Response::HTTP_BAD_REQUEST);
 		}
 
-		$client = $this->entityManager->getRepository(Client::class)->find($data['client_id']);
+		$formattedUuid = preg_replace(
+			'/^(.{8})(.{4})(.{4})(.{4})(.{12})$/',
+			'$1-$2-$3-$4-$5',
+			strtoupper($data['client'])
+		);
+
+		try {
+			$clientUuid = Uuid::fromString($formattedUuid);
+		} catch (\InvalidArgumentException $e) {
+			return new JsonResponse(['error' => 'Invalid client UUID format'], Response::HTTP_BAD_REQUEST);
+		}
+
+		$client = $this->entityManager->getRepository(Client::class)->find($clientUuid);
 
 		if (!$client) {
 			return new JsonResponse(['error' => 'Client not found'], Response::HTTP_BAD_REQUEST);
 		}
 
 		$user = new User();
-		$user->setUsername($data['username']);
 		$user->setEmail($data['email']);
+		$user->setPassword($this->passwordHasher->hashPassword($user, $data['password']));
 		$user->setClient($client);
 
 		$this->entityManager->persist($user);
 		$this->entityManager->flush();
 
-		return new JsonResponse(['id' => $user->getId()], Response::HTTP_CREATED);
+		return new JsonResponse(['id' => $user->getId()->toRfc4122()], Response::HTTP_CREATED);
 	}
 
 
