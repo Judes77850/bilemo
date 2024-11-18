@@ -6,14 +6,16 @@ use App\Repository\ClientRepository;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Uid\UuidV7;
 
 #[ORM\Entity(repositoryClass: ClientRepository::class)]
 class Client
 {
 	#[ORM\Id]
-	#[ORM\GeneratedValue]
-	#[ORM\Column(type: 'integer')]
-	private ?int $id = null;
+	#[ORM\GeneratedValue(strategy: 'NONE')]
+	#[ORM\Column(type: 'uuid')]
+	private Uuid $id;
 
 	#[ORM\Column(type: 'string', length: 255)]
 	private ?string $companyName = null;
@@ -23,10 +25,11 @@ class Client
 
 	public function __construct()
 	{
+		$this->id = Uuid::v7();
 		$this->users = new ArrayCollection();
 	}
 
-	public function getId(): ?int
+	public function getId(): Uuid|UuidV7
 	{
 		return $this->id;
 	}

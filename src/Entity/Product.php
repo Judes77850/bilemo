@@ -4,14 +4,16 @@ namespace App\Entity;
 
 use App\Repository\ProductRepository;
 use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Uid\UuidV7;
 
 #[ORM\Entity(repositoryClass: ProductRepository::class)]
 class Product
 {
 	#[ORM\Id]
-	#[ORM\GeneratedValue]
-	#[ORM\Column(type: 'integer')]
-	private ?int $id = null;
+	#[ORM\GeneratedValue(strategy: 'NONE')]
+	#[ORM\Column(type: 'uuid')]
+	private Uuid $id;
 
 	#[ORM\Column(type: 'string', length: 255)]
 	private ?string $name = null;
@@ -28,12 +30,16 @@ class Product
 	#[ORM\Column(type: 'integer')]
 	private ?int $stock = null;
 
+	public function __construct()
+	{
+		$this->id = Uuid::v7();
+	}
 
-
-	public function getId(): ?int
+	public function getId(): Uuid|UuidV7
 	{
 		return $this->id;
 	}
+
 
 	public function getName(): ?string
 	{
