@@ -2,44 +2,107 @@
 
 namespace App\Controller;
 
+use App\DTO\ProductPayload;
 use App\Entity\Product;
+use App\Message\AddProductMessage;
+use App\Service\PaginationService;
 use Doctrine\ORM\EntityManagerInterface;
+use Nelmio\ApiDocBundle\Attribute\Model;
+use OpenApi\Attributes as OA;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
+use Symfony\Component\Messenger\HandleTrait;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Uid\Uuid;
 
 class ProductController extends AbstractController
 {
-	private EntityManagerInterface $entityManager;
+	use HandleTrait;
 
-	public function __construct(EntityManagerInterface $entityManager)
+	private EntityManagerInterface $entityManager;
+	private PaginationService $paginationService;
+
+
+	public function __construct(EntityManagerInterface $entityManager, PaginationService $paginationService, MessageBusInterface $messageBus)
 	{
 		$this->entityManager = $entityManager;
+		$this->paginationService = $paginationService;
+		$this->messageBus = $messageBus;
 	}
 
 	#[Route('/api/products', name: 'get_products', methods: ['GET'])]
-	public function getProducts(): JsonResponse
+	#[OA\Get(
+		summary: 'Recupere une liste paginee de products.',
+		tags: ['Products'],
+		parameters: [
+			new OA\Parameter(
+				name: 'page',
+				description: 'Numero de la page a recuperer.',
+				in: 'query',
+				schema: new OA\Schema(type: 'integer', default: 1)
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 200,
+				description: 'Liste paginee des products.',
+				content: new OA\JsonContent(
+					type: 'array',
+					items: new OA\Items(ref: new Model(type: Product::class, groups: ['product
+					_list']))
+				)
+			),
+		]
+	)]
+	public function getProducts(Request $request, UrlGeneratorInterface $urlGenerator): JsonResponse
 	{
-		$products = $this->entityManager->getRepository(Product::class)->findAll();
-		$data = [];
-		foreach ($products as $product) {
-			$data[] = [
-				'id' => $product->getId(),
-				'name' => $product->getName(),
-				'brand' => $product->getBrand(),
-				'price' => $product->getPrice(),
-				'description' => $product->getDescription(),
-				'stock' => $product->getStock(),
-			];
-		}
+		$query = $this->entityManager->getRepository(Product::class)->createQueryBuilder('p')->getQuery();
 
-		return new JsonResponse($data);
+		$page = max((int)$request->query->get('page', 1), 1);
+		$paginatedResponse = $this->paginationService->paginate(
+			$query,
+			$page,
+			5,
+			fn(Product $product) => ProductResponse::fromProduct($product, $urlGenerator)
+		);
+
+		return new JsonResponse($paginatedResponse->toArray());
 	}
 
 	#[Route('/api/products/{id}', name: 'get_product', methods: ['GET'])]
-	public function getProduct(int $id): JsonResponse
+	#[OA\Get(
+		summary: 'Recupere les details d\'un product.',
+		tags: ['Products'],
+		parameters: [
+			new OA\Parameter(
+				name: 'id',
+				description: 'ID du product a recuperer.',
+				in: 'path',
+				schema: new OA\Schema(type: 'string', format: 'uuid')
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 200,
+				description: 'Details du product.',
+				content: new OA\JsonContent(ref: new Model(type: Product::class, groups: ['product
+				_detail']))
+			),
+			new OA\Response(
+				response: 404,
+				description: 'Product non trouve.',
+				content: new OA\JsonContent(properties: [
+					new OA\Property(property: 'error', type: 'string')
+				], type: 'object')
+			)
+		]
+	)]
+	public function getProduct(Uuid $id, UrlGeneratorInterface $urlGenerator): JsonResponse
 	{
 		$product = $this->entityManager->getRepository(Product::class)->find($id);
 
@@ -47,44 +110,82 @@ class ProductController extends AbstractController
 			return new JsonResponse(['error' => 'Product not found'], Response::HTTP_NOT_FOUND);
 		}
 
-		$data = [
-			'id' => $product->getId(),
-			'name' => $product->getName(),
-			'price' => $product->getPrice(),
-		];
+		$response = ProductResponse::fromProduct($product, $urlGenerator);
 
-		return new JsonResponse($data);
+		return new JsonResponse($response);
+
 	}
 
-	#[Route('/api/product', name: 'add_product', methods: ['POST'])]
-	public function addProduct(Request $request): JsonResponse
+	#[Route('/api/products', name: 'add_product', methods: ['POST'])]
+	#[OA\Post(
+		summary: 'Ajout d un product.',
+		requestBody: new OA\RequestBody(
+			description: 'Donnees du product a ajouter.',
+			required: true,
+			content: new OA\JsonContent(ref: new Model(type: ProductPayload::class))
+		),
+		tags: ['Products'],
+		responses: [
+			new OA\Response(
+				response: 201,
+				description: 'Product ajoute avec succes.',
+				content: new OA\JsonContent(
+					properties: [
+						new OA\Property(property: 'id', type: 'string', format: 'uuid')
+					],
+					type: 'object'
+				)
+			),
+		]
+	)]
+	public function addProduct(#[MapRequestPayload(validationFailedStatusCode: 400)] ProductPayload $payload): JsonResponse
 	{
-		$data = json_decode($request->getContent(), true);
+		/** @var Product $product */
+		$product = $this->handle(new AddProductMessage(
+			$payload->name,
+			$payload->description,
+			$payload->price,
+			$payload->brand,
+			$payload->stock
+		));
 
-		if (!isset($data['name']) || !isset($data['description']) || !isset($data['price']) || !isset($data['brand']) || !isset($data['stock'])) {
-			return new JsonResponse(['error' => 'Missing required fields'], Response::HTTP_BAD_REQUEST);
-		}
-
-		$product = new Product();
-		$product->setName($data['name']);
-		$product->setDescription($data['description']);
-		$product->setPrice($data['price']);
-		$product->setBrand($data['brand']);
-		$product->setStock($data['stock']);
-
-		$this->entityManager->persist($product);
-		$this->entityManager->flush();
-
-		return new JsonResponse(['id' => $product->getId()], Response::HTTP_CREATED);
+		return new JsonResponse([
+			'id' => $product->getId(),
+		], Response::HTTP_CREATED);
 	}
 
 	#[Route('/api/product/{id}', name: 'delete_product', methods: ['DELETE'])]
-	public function deleteProduct(int $id): JsonResponse
+	#[OA\Delete(
+		summary: 'Supprime un product.',
+		tags: ['Products'],
+		parameters: [
+			new OA\Parameter(
+				name: 'id',
+				description: 'ID du product a supprimer.',
+				in: 'path',
+				schema: new OA\Schema(type: 'string', format: 'uuid')
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 204,
+				description: 'Product supprime avec succes.'
+			),
+			new OA\Response(
+				response: 404,
+				description: 'Product non trouve.',
+				content: new OA\JsonContent(properties: [
+					new OA\Property(property: 'error', type: 'string')
+				], type: 'object')
+			)
+		]
+	)]
+	public function deleteProduct(Uuid $id): JsonResponse
 	{
 		$product = $this->entityManager->getRepository(Product::class)->find($id);
 
 		if (!$product) {
-			return new JsonResponse(['error' => 'product not found'], Response::HTTP_NOT_FOUND);
+			return new JsonResponse(['error' => 'Product not found'], Response::HTTP_NOT_FOUND);
 		}
 
 		$this->entityManager->remove($product);

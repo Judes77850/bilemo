@@ -20,6 +20,7 @@ class Client
 	#[ORM\Column(type: 'string', length: 255)]
 	private ?string $companyName = null;
 
+	/** @var ArrayCollection<int, User> $users*/
 	#[ORM\OneToMany(targetEntity: User::class, mappedBy: 'client', cascade: ['persist', 'remove'])]
 	private Collection $users;
 

@@ -2,114 +2,191 @@
 
 namespace App\Controller;
 
-use App\Entity\Client;
+use App\DTO\UserPayload;
 use App\Entity\User;
+use App\Message\AddUserMessage;
+use App\Service\PaginationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\Routing\Annotation\Route;
-use Symfony\Component\Uid\Uuid;
+use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
+use Symfony\Component\Messenger\HandleTrait;
+use Nelmio\ApiDocBundle\Attribute\Model;
+use OpenApi\Attributes as OA;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Uid\Uuid;
+
 
 class UserController extends AbstractController
 {
-	private EntityManagerInterface $entityManager;
-	private UserPasswordHasherInterface $passwordHasher;
+	use HandleTrait;
 
-	public function __construct(EntityManagerInterface $entityManager, UserPasswordHasherInterface $passwordHasher)
+	private EntityManagerInterface $entityManager;
+	private PaginationService $paginationService;
+
+
+	public function __construct(EntityManagerInterface $entityManager, PaginationService $paginationService, MessageBusInterface $messageBus)
 	{
 		$this->entityManager = $entityManager;
-		$this->passwordHasher = $passwordHasher;
+		$this->paginationService = $paginationService;
+		$this->messageBus = $messageBus;
 	}
 
 	#[Route('/api/users', name: 'get_users', methods: ['GET'])]
-	public function getUsers(): JsonResponse
+	#[OA\Get(
+		summary: 'Recupere une liste paginee de users.',
+		tags: ['Users'],
+		parameters: [
+			new OA\Parameter(
+				name: 'page',
+				description: 'Numero de la page a recuperer.',
+				in: 'query',
+				schema: new OA\Schema(type: 'integer', default: 1)
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 200,
+				description: 'Liste paginee des users.',
+				content: new OA\JsonContent(
+					type: 'array',
+					items: new OA\Items(ref: new Model(type: User::class, groups: ['user_list']))
+				)
+			),
+		]
+	)]
+	public function getUsers(Request $request, UrlGeneratorInterface $urlGenerator): JsonResponse
 	{
-		$users = $this->entityManager->getRepository(User::class)->findAll();
-		$data = [];
-
-		foreach ($users as $user) {
-			$data[] = [
-				'id' => $user->getId(),
-				'username' => $user->getUsername(),
-				'firstname' => $user->getFirstname(),
-				'lastname' => $user->getLastname(),
-				'clientId' => $user->getClient()->getId(),
-			];
-		}
-
-		return new JsonResponse($data);
-	}
-
-
-	#[Route('/api/user/{id}', name: 'get_user', methods: ['GET'])]
-	public function getUserById(int $id): JsonResponse
-	{
-		$user = $this->entityManager->getRepository(User::class)->find($id);
-
-		if (!$user) {
-			return new JsonResponse(['error' => 'User not found'], Response::HTTP_NOT_FOUND);
-		}
-
-		$data = [
-			'id' => $user->getId(),
-			'username' => $user->getUsername(),
-		];
-
-		return new JsonResponse($data);
-	}
-
-
-	#[Route('/api/user', name: 'add_user', methods: ['POST'])]
-	public function addUser(Request $request): JsonResponse
-	{
-		$data = json_decode($request->getContent(), true);
-
-		if (!isset($data['username'], $data['email'], $data['password'], $data['client'])) {
-			return new JsonResponse(['error' => 'Missing required fields'], Response::HTTP_BAD_REQUEST);
-		}
-
-		$formattedUuid = preg_replace(
-			'/^(.{8})(.{4})(.{4})(.{4})(.{12})$/',
-			'$1-$2-$3-$4-$5',
-			strtoupper($data['client'])
+		$query = $this->entityManager->getRepository(User::class)->createQueryBuilder('u')->getQuery();
+		$page = max((int)$request->query->get('page', 1), 1);
+		$paginatedResponse = $this->paginationService->paginate(
+			$query,
+			$page,
+			5,
+			fn(User $user) => UserResponse::fromUser($user, $urlGenerator)
 		);
+		return new JsonResponse($paginatedResponse->toArray());
 
-		try {
-			$clientUuid = Uuid::fromString($formattedUuid);
-		} catch (\InvalidArgumentException $e) {
-			return new JsonResponse(['error' => 'Invalid client UUID format'], Response::HTTP_BAD_REQUEST);
-		}
-
-		$client = $this->entityManager->getRepository(Client::class)->find($clientUuid);
-
-		if (!$client) {
-			return new JsonResponse(['error' => 'Client not found'], Response::HTTP_BAD_REQUEST);
-		}
-
-		$user = new User();
-		$user->setEmail($data['email']);
-		$user->setPassword($this->passwordHasher->hashPassword($user, $data['password']));
-		$user->setClient($client);
-
-		$this->entityManager->persist($user);
-		$this->entityManager->flush();
-
-		return new JsonResponse(['id' => $user->getId()->toRfc4122()], Response::HTTP_CREATED);
 	}
 
 
-	#[Route('/api/user/{id}', name: 'delete_user', methods: ['DELETE'])]
-	public function deleteUser(int $id): JsonResponse
+	#[Route('/api/users/{id}', name: 'get_user', methods: ['GET'])]
+	#[OA\Get(
+		summary: 'Recupere les details d\'un user.',
+		tags: ['Users'],
+		parameters: [
+			new OA\Parameter(
+				name: 'id',
+				description: 'ID du user a recuperer.',
+				in: 'path',
+				schema: new OA\Schema(type: 'string', format: 'uuid')
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 200,
+				description: 'Details du user.',
+				content: new OA\JsonContent(ref: new Model(type: User::class, groups: ['user_detail']))
+			),
+			new OA\Response(
+				response: 404,
+				description: 'User non trouve.',
+				content: new OA\JsonContent(properties: [
+					new OA\Property(property: 'error', type: 'string')
+				], type: 'object')
+			)
+		]
+	)]
+	public function getUserById(Uuid $id, UrlGeneratorInterface $urlGenerator): JsonResponse
 	{
 		$user = $this->entityManager->getRepository(User::class)->find($id);
-
 		if (!$user) {
 			return new JsonResponse(['error' => 'User not found'], Response::HTTP_NOT_FOUND);
 		}
+		$response = UserResponse::fromUser($user, $urlGenerator);
+		return new JsonResponse($response);
+	}
 
+	#[Route('/api/users', name: 'add_user', methods: ['POST'])]
+	#[OA\Post(
+		summary: 'Ajoute un user.',
+		requestBody: new OA\RequestBody(
+			description: 'Donnees du user a ajouter.',
+			required: true,
+			content: new OA\JsonContent(ref: new Model(type: UserPayload::class))
+		),
+		tags: ['Users'],
+		responses: [
+			new OA\Response(
+				response: 201,
+				description: 'User ajoute avec succes.',
+				content: new OA\JsonContent(
+					properties: [
+						new OA\Property(property: 'id', type: 'string', format: 'uuid')
+					],
+					type: 'object'
+				)
+			),
+		]
+	)]
+	public function addUser(#[MapRequestPayload] UserPayload $payload, UserPasswordHasherInterface $passwordHasher): JsonResponse
+	{
+		$hashedPassword = $passwordHasher->hashPassword(new User(), $payload->password);
+
+		$user = $this->handle(new AddUserMessage(
+			$payload->firstname,
+			$payload->lastname,
+			$payload->email,
+			Uuid::fromString($payload->clientId),
+			$hashedPassword
+		));
+		if (!$user instanceof User) {
+			return new JsonResponse(['error' => 'User creation failed'], Response::HTTP_INTERNAL_SERVER_ERROR);
+		}
+		return new JsonResponse(
+			['id' => $user->getId()->toRfc4122()],
+			Response::HTTP_CREATED
+		);
+	}
+
+
+	#[Route('/api/users/{id}', name: 'delete_user', methods: ['DELETE'])]
+	#[OA\Delete(
+		summary: 'Supprime un user.',
+		tags: ['Users'],
+		parameters: [
+			new OA\Parameter(
+				name: 'id',
+				description: 'ID du user a supprimer.',
+				in: 'path',
+				schema: new OA\Schema(type: 'string', format: 'uuid')
+			),
+		],
+		responses: [
+			new OA\Response(
+				response: 204,
+				description: 'User supprime avec succes.'
+			),
+			new OA\Response(
+				response: 404,
+				description: 'User non trouve.',
+				content: new OA\JsonContent(properties: [
+					new OA\Property(property: 'error', type: 'string')
+				], type: 'object')
+			)
+		]
+	)]
+	public function deleteUser(Uuid $id): JsonResponse
+	{
+		$user = $this->entityManager->getRepository(User::class)->find($id);
+		if (!$user) {
+			return new JsonResponse(['error' => 'User not found'], Response::HTTP_NOT_FOUND);
+		}
 		$this->entityManager->remove($user);
 		$this->entityManager->flush();
 
