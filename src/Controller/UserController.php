@@ -5,6 +5,7 @@ namespace App\Controller;
 use App\DTO\UserPayload;
 use App\Entity\User;
 use App\Message\AddUserMessage;
+use App\Repository\ClientRepository;
 use App\Service\PaginationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -19,7 +20,9 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 
 class UserController extends AbstractController
@@ -134,24 +137,47 @@ class UserController extends AbstractController
 			),
 		]
 	)]
-	public function addUser(#[MapRequestPayload] UserPayload $payload, UserPasswordHasherInterface $passwordHasher): JsonResponse
-	{
-		$hashedPassword = $passwordHasher->hashPassword(new User(), $payload->password);
+	public function addUser(
+		Request $request,
+		SerializerInterface $serializer,
+		ValidatorInterface $validator,
+		UserPasswordHasherInterface $passwordHasher,
+		ClientRepository $clientRepository,
+		MessageBusInterface $messageBus,
+	): JsonResponse {
+		try {
+			$payload = $serializer->deserialize($request->getContent(), UserPayload::class, 'json');
 
-		$user = $this->handle(new AddUserMessage(
-			$payload->firstname,
-			$payload->lastname,
-			$payload->email,
-			Uuid::fromString($payload->clientId),
-			$hashedPassword
-		));
-		if (!$user instanceof User) {
-			return new JsonResponse(['error' => 'User creation failed'], Response::HTTP_INTERNAL_SERVER_ERROR);
+			$errors = $validator->validate($payload);
+
+			if ($errors->count() > 0) {
+				$errorMessages = [];
+				foreach ($errors as $error) {
+					$errorMessages[] = $error->getPropertyPath() . ': ' . $error->getMessage();
+				}
+				return new JsonResponse(['errors' => $errorMessages], JsonResponse::HTTP_BAD_REQUEST);
+			}
+
+			$client = $clientRepository->find($payload->clientId);
+
+			if (!$client) {
+				return new JsonResponse(['error' => 'Client not found'], JsonResponse::HTTP_BAD_REQUEST);
+			}
+
+			$hashedPassword = $passwordHasher->hashPassword(new User(), $payload->password);
+
+			$messageBus->dispatch(new AddUserMessage(
+				$payload->firstname,
+				$payload->lastname,
+				$payload->email,
+				$payload->clientId,
+				$hashedPassword
+			));
+
+			return new JsonResponse(['message' => 'User creation in progress'], Response::HTTP_ACCEPTED);
+		} catch (\Exception $e) {
+			return new JsonResponse(['error' => $e->getMessage()], JsonResponse::HTTP_INTERNAL_SERVER_ERROR);
 		}
-		return new JsonResponse(
-			['id' => $user->getId()->toRfc4122()],
-			Response::HTTP_CREATED
-		);
 	}
 
 

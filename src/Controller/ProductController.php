@@ -18,7 +18,9 @@ use Symfony\Component\Messenger\HandleTrait;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 class ProductController extends AbstractController
 {
@@ -138,20 +140,37 @@ class ProductController extends AbstractController
 			),
 		]
 	)]
-	public function addProduct(#[MapRequestPayload(validationFailedStatusCode: 400)] ProductPayload $payload): JsonResponse
-	{
-		/** @var Product $product */
-		$product = $this->handle(new AddProductMessage(
-			$payload->name,
-			$payload->description,
-			$payload->price,
-			$payload->brand,
-			$payload->stock
-		));
+	public function addProduct(
+		Request $request,
+		SerializerInterface $serializer,
+		ValidatorInterface $validator,
+		MessageBusInterface $messageBus
+	): JsonResponse {
+		try {
+			$payload = $serializer->deserialize($request->getContent(), ProductPayload::class, 'json');
 
-		return new JsonResponse([
-			'id' => $product->getId(),
-		], Response::HTTP_CREATED);
+			$errors = $validator->validate($payload);
+
+			if ($errors->count() > 0) {
+				$errorMessages = [];
+				foreach ($errors as $error) {
+					$errorMessages[] = $error->getPropertyPath() . ': ' . $error->getMessage();
+				}
+				return new JsonResponse(['errors' => $errorMessages], JsonResponse::HTTP_BAD_REQUEST);
+			}
+
+			$messageBus->dispatch(new AddProductMessage(
+				$payload->name,
+				$payload->description,
+				$payload->price,
+				$payload->brand,
+				$payload->stock
+			));
+
+			return new JsonResponse(['message' => 'Product creation in progress'], Response::HTTP_ACCEPTED);
+		} catch (\Exception $e) {
+			return new JsonResponse(['error' => $e->getMessage()], JsonResponse::HTTP_INTERNAL_SERVER_ERROR);
+		}
 	}
 
 	#[Route('/api/product/{id}', name: 'delete_product', methods: ['DELETE'])]
