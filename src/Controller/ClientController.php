@@ -7,18 +7,20 @@ use App\Entity\Client;
 use App\Message\AddClientMessage;
 use App\Service\PaginationService;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
-use Symfony\Component\HttpFoundation\JsonResponse;
-use Symfony\Component\HttpFoundation\Response;
-use Symfony\Component\HttpKernel\Attribute\MapQueryParameter;
-use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
 use Nelmio\ApiDocBundle\Attribute\Model;
 use OpenApi\Attributes as OA;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Attribute\MapQueryParameter;
+use Symfony\Component\Messenger\HandleTrait;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Routing\Annotation\Route;
-use Symfony\Component\Messenger\HandleTrait;
 use Symfony\Component\Routing\Generator\UrlGeneratorInterface;
+use Symfony\Component\Serializer\SerializerInterface;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 class ClientController extends AbstractController
 {
@@ -119,15 +121,15 @@ class ClientController extends AbstractController
 	#[OA\Post(
 		summary: 'Ajoute un client.',
 		requestBody: new OA\RequestBody(
-			description: 'Donnees du client a ajouter.',
+			description: 'Données du client à ajouter.',
 			required: true,
-			content: new OA\JsonContent(ref: new Model(type: ClientPayload::class))
+			content: new OA\JsonContent(ref: new Model(type: Client::class))
 		),
 		tags: ['Clients'],
 		responses: [
 			new OA\Response(
 				response: 201,
-				description: 'Client ajoute avec succes.',
+				description: 'Client ajouté avec succès.',
 				content: new OA\JsonContent(
 					properties: [
 						new OA\Property(property: 'id', type: 'string', format: 'uuid')
@@ -135,18 +137,38 @@ class ClientController extends AbstractController
 					type: 'object'
 				)
 			),
+			new OA\Response(
+				response: 400,
+				description: 'Erreur de validation des données.',
+				content: new OA\JsonContent(type: 'string')
+			)
 		]
 	)]
-	public function addClient(#[MapRequestPayload] ClientPayload $payload): JsonResponse
-	{
+	public function addClient(
+		Request $request,
+		SerializerInterface $serializer,
+		ValidatorInterface $validator,
+		MessageBusInterface $messageBus,
+	): JsonResponse {
+		try {
+			$payload = $serializer->deserialize($request->getContent(), ClientPayload::class, 'json');
 
-		/** @var Client $client */
-		$client = $this->handle(new AddClientMessage($payload->name));
+			$errors = $validator->validate($payload);
 
+			if ($errors->count() > 0) {
+				$errorMessages = [];
+				foreach ($errors as $error) {
+					$errorMessages[] = $error->getPropertyPath() . ': ' . $error->getMessage();
+				}
+				return new JsonResponse(['errors' => $errorMessages], JsonResponse::HTTP_BAD_REQUEST);
+			}
 
-		return new JsonResponse([
-			'id' => $client->getId(),
-		], Response::HTTP_CREATED);
+			$messageBus->dispatch(new AddClientMessage($payload->name));
+
+			return new JsonResponse(['message' => 'Client creation in progress'], Response::HTTP_ACCEPTED);
+		} catch (\Exception $e) {
+			return new JsonResponse(['error' => $e->getMessage()], JsonResponse::HTTP_INTERNAL_SERVER_ERROR);
+		}
 	}
 
 	#[
